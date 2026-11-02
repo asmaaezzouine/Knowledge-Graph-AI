@@ -1,0 +1,11 @@
+﻿fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+neo4j
+groq
+google-genai
+requests
+beautifulsoup4
+PyMuPDF
+pyspark

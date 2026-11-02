@@ -1,0 +1,44 @@
+﻿# Environnements Python
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+**/env/
+
+# Cache Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Fichiers JSON : données et résultats locaux
+*.json
+**/*.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Checkpoints
+checkpoints/
+checkpoints_maroc/
+
+# Fichiers temporaires
+*.tmp
+*.bak
+
+# IDE et système
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Journaux d'extraction
+**/extraction.log

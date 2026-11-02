@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="fr" data-bs-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GraphRAG Maroc – Plateforme d'analyse</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+.btn-primary{--bs-btn-bg:#0f4c4a;--bs-btn-border-color:#0f4c4a;--bs-btn-hover-bg:#0b3a38;--bs-btn-hover-border-color:#0b3a38;--bs-btn-active-bg:#0b3a38;--bs-btn-active-border-color:#0b3a38}
+[data-bs-theme=dark] .btn-primary{--bs-btn-bg:#2f8f88;--bs-btn-border-color:#2f8f88;--bs-btn-hover-bg:#3aa39b;--bs-btn-hover-border-color:#3aa39b}
+.nav-pills{--bs-nav-pills-link-active-bg:#0f4c4a}[data-bs-theme=dark] .nav-pills{--bs-nav-pills-link-active-bg:#2f8f88}
+#side{min-height:auto}@media(min-width:768px){#side{width:240px;min-height:100vh;position:sticky;top:0;height:100vh;overflow:auto}}
+#gv{height:540px}#sd{max-height:540px;overflow:auto}.brand{font-family:Georgia,serif;letter-spacing:-.02em}
+.ans table{font-size:.85rem}.q-btn{text-align:left}
+</style>
+</head>
+<body>
+<div class="d-flex flex-column flex-md-row">
+<nav id="side" class="bg-body-tertiary border-end p-3 flex-shrink-0 d-flex flex-column">
+  <h5 class="brand fw-bold mb-0">GraphRAG Maroc</h5><p class="small text-body-secondary mb-3">Réseau politique et économique</p>
+  <div class="nav nav-pills flex-md-column gap-1" id="nv"></div>
+  <div class="mt-auto pt-3 small">
+    <label class="form-label mb-1" for="ap">API</label><input id="ap" class="form-control form-control-sm mb-2">
+    <div id="me" class="text-body-secondary mb-2"></div>
+    <button class="btn btn-outline-secondary btn-sm w-100" id="th">Thème clair / sombre</button>
+  </div>
+</nav>
+<main id="pg" class="flex-grow-1 p-3 p-md-4" style="min-width:0"></main>
+</div>
+
+<div class="modal fade" id="lg" data-bs-backdrop="static" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-sm"><div class="modal-content p-3 gap-2">
+  <h6 class="mb-0">Connexion</h6><input id="lu" class="form-control" placeholder="Utilisateur"><input id="lp" type="password" class="form-control" placeholder="Mot de passe">
+  <button class="btn btn-primary" id="lb">Se connecter</button><div class="text-danger small" id="le"></div></div></div></div>
+<div class="modal fade" id="vm" tabindex="-1"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h6 class="modal-title" id="vt"></h6><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="vb"></div></div></div></div>
+
+<script>
+const $=s=>document.querySelector(s),esc=t=>String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+let API=ls.get('api')||'http://127.0.0.1:8000',TOKEN=ls.get('tk')||'',ME={role:'admin',utilisateur:null},timer=null,uid=0,BANC=[];
+const RANG={lecteur:1,analyste:2,admin:3},safe=u=>/^https?:\/\//i.test(u)?esc(u):'#';
+document.documentElement.setAttribute('data-bs-theme',ls.get('th')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'));
+$('#th').onclick=()=>{const t=document.documentElement.getAttribute('data-bs-theme')==='dark'?'light':'dark';document.documentElement.setAttribute('data-bs-theme',t);ls.set('th',t)};
+
+async function call(p,o={}){
+  o.headers={...(o.headers||{}),...(TOKEN?{Authorization:'Bearer '+TOKEN}:{})};
+  const t=performance.now(),r=await fetch(API+p,o),ms=Math.round(performance.now()-t);
+  if(r.status===401){TOKEN='';ls.set('tk','');bootstrap.Modal.getOrCreateInstance($('#lg')).show();throw new Error('Connexion requise')}
+  if(!r.ok){let m=await r.text();try{m=JSON.parse(m).detail||m}catch(e){}throw new Error('HTTP '+r.status+' – '+(typeof m==='string'?m:JSON.stringify(m)).slice(0,300))}
+  return{d:await r.json(),ms};
+}
+const post=(p,b)=>call(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+$('#lb').onclick=async()=>{try{const {d}=await post('/auth/login',{username:$('#lu').value,password:$('#lp').value});TOKEN=d.access_token;ls.set('tk',TOKEN);bootstrap.Modal.getInstance($('#lg')).hide();boot()}catch(e){$('#le').textContent=e.message}};
+
+/* ---------- composants ---------- */
+const badge=(t,c)=>`<span class="badge text-bg-${c}">${esc(t)}</span>`;
+const NAT={politique:'primary',economique:'warning','économique':'warning',familial:'secondary',institutionnel:'info',autre:'secondary',non_qualifie:'light','non qualifié':'light'};
+const bStat=s=>badge(s,String(s).startsWith('CONFIRME')?'success':'warning');
+const fmt=v=>v==null||v===''?'—':Array.isArray(v)?v.join(', ')||'—':typeof v==='object'?JSON.stringify(v):v;
+const cell=(c,v)=>/^statut$/i.test(c)&&v?bStat(v):/^nature$/i.test(c)&&v?badge(v,NAT[v]||'secondary'):c==='Sources'?DOMPurify.sanitize(marked.parseInline(String(v??'—'))):esc(fmt(v));
+const tbl=(rows,cols)=>{rows=rows||[];if(!rows.length)return'<p class="text-body-secondary small">Aucune ligne.</p>';cols=cols||Object.keys(rows[0]);return`<div class="table-responsive"><table class="table table-sm table-hover align-middle small"><thead><tr>${cols.map(c=>`<th class="text-nowrap">${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.slice(0,300).map(r=>`<tr>${cols.map(c=>`<td>${cell(c,r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`};
+const kpi=a=>`<div class="row g-3 mb-3">${a.map(([v,l])=>`<div class="col-6 col-md"><div class="card h-100"><div class="card-body py-3"><div class="fs-3 fw-semibold">${esc(fmt(v))}</div><div class="text-body-secondary small">${esc(l)}</div></div></div></div>`).join('')}</div>`;
+const bars=(t,o)=>{const e=Object.entries(o||{}).sort((a,b)=>b[1]-a[1]),m=Math.max(1,...e.map(x=>x[1]));return`<div class="card h-100"><div class="card-header fw-semibold">${esc(t)}</div><div class="card-body">${e.map(([k,v])=>`<div class="d-flex justify-content-between small"><span>${esc(k)}</span><span>${v}</span></div><div class="progress mb-2" style="height:7px"><div class="progress-bar" style="width:${100*v/m}%"></div></div>`).join('')||'<span class="text-body-secondary small">—</span>'}</div></div>`};
+const md=t=>DOMPurify.sanitize(marked.parse(t||'')).replace(/<table>/g,'<div class="table-responsive"><table class="table table-sm table-striped">').replace(/<\/table>/g,'</table></div>');
+const head=(t,s)=>`<h2 class="brand fw-bold">${t}</h2><p class="text-body-secondary mb-4" style="max-width:75ch">${s}</p>`;
+const fail=e=>`<div class="alert alert-danger">${esc(e.message)}</div>`;
+const spin=m=>`<div class="d-flex align-items-center gap-2 text-body-secondary"><div class="spinner-border spinner-border-sm"></div>${m||'Chargement…'}</div>`;
+const card=(t,b)=>`<div class="card mb-3">${t?`<div class="card-header fw-semibold">${t}</div>`:''}<div class="card-body">${b}</div></div>`;
+async function load(sel,p,render){$(sel).innerHTML=spin();try{const {d}=await call(p);$(sel).innerHTML=render(d)}catch(e){$(sel).innerHTML=fail(e)}}
+function accordion(items){const id='ac'+(++uid);return`<div class="accordion mb-3" id="${id}">${items.map((it,i)=>`<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button ${i?'collapsed':''}" data-bs-toggle="collapse" data-bs-target="#${id}-${i}">${it[0]}</button></h2><div id="${id}-${i}" class="accordion-collapse collapse ${i?'':'show'}"><div class="accordion-body">${it[1]}</div></div></div>`).join('')}</div>`}
+function relCards(rels){return`<div class="list-group">${rels.slice(0,30).map(r=>`<div class="list-group-item"><div class="fw-semibold">${esc(r.source??'—')} <span class="text-body-secondary">— ${esc(r.relation)} →</span> ${esc(r.cible??'—')}</div><div class="small my-1">${bStat(r.statut??'A_VERIFIER')} ${badge(r.nature??'—',NAT[r.nature]||'secondary')} <span class="text-body-secondary">confiance ${esc(r.confiance??'non renseignée')}${r.debut||r.fin?' · '+esc(r.debut||'?')+' → '+esc(r.fin||'?'):''}</span></div>${(r.preuves||[]).map(p=>`<blockquote class="small border-start ps-2 mb-1 text-body-secondary">${esc(p)}</blockquote>`).join('')||'<div class="small text-warning">Aucun extrait textuel.</div>'}${(r.sources||[]).map(u=>`<a class="small me-2" href="${safe(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\//,'').slice(0,45))}</a>`).join('')}</div>`).join('')}</div>${rels.length>30?`<p class="small text-body-secondary mt-2">30 relations affichées sur ${rels.length}.</p>`:''}`}
+function answer(d){
+  const res=d.resultat||{},rels=d.relations||[],ts=(res.tableaux||[]).filter(t=>t.lignes&&t.lignes.length);
+  return`<div class="small text-body-secondary mb-2">Recherche : <b>${esc(d.type_de_recherche)}</b> · Résultats : <b>${res.total??0}</b> · Relations : <b>${d.nombre_relations}</b> · Entités : <b>${esc((d.entites_detectees||[]).map(e=>e.label).join(', ')||'aucune')}</b></div>
+  ${(d.erreurs_llm||[]).length?`<div class="alert alert-warning py-2 small">Synthèse du modèle dégradée (${esc(d.erreurs_llm.join(' ; '))}). Les tableaux restent calculés sur le graphe.</div>`:''}
+  <div class="card mb-3 ans"><div class="card-body">${md(d.reponse)}</div></div>
+  ${(res.notes||[]).length?`<div class="alert alert-secondary small"><b>Notes et limites</b><ul class="mb-0">${res.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`:''}
+  ${rels.length?accordion([[`Provenance et preuves · ${rels.length} relation(s)`,relCards(rels)]]):''}`;
+}
+
+/* ---------- Assistant + banc de test ---------- */
+const BANQUE=[
+ ['Entreprises',["Qui sont les actionnaires des grands groupes marocains ?","Qui préside les conseils d'administration des entreprises ?","Quelles sont les filiales des grands groupes marocains ?"]],
+ ['Politique et économie',["Quelles sont les relations entre les responsables politiques et les grandes entreprises marocaines ?","Quels responsables politiques exercent également des fonctions dans des entreprises ?","Quels responsables politiques sont fondateurs, dirigeants, administrateurs ou actionnaires d'entreprises ?","Existe-t-il des chemins indirects entre les responsables politiques et les entreprises ?","Quels sont les liens entre Aziz Akhannouch et Akwa Group ?","Quels sont les liens entre les personnalités politiques et les grands groupes marocains ?"]],
+ ['Relations et preuves',["Quel est le lien entre Salaheddine Mezouar et Mohamed Benchaâboun ?","Existe-t-il un chemin indirect entre Aziz Akhannouch et Salaheddine Mezouar ?","Quels sont les intermédiaires entre Aziz Akhannouch et Salaheddine Mezouar ?","Quelles relations sont documentées par des sources ?","Quelles relations sont confirmées ou à vérifier ?","Quel est le niveau de confiance des relations ?"]],
+ ['Gabarits à compléter',[{l:'Liens directs entre deux personnalités',f:'Quel est le lien entre [Personne A] et [Personne B] ?'},{l:'Chemin indirect entre deux entités',f:'Existe-t-il un chemin indirect entre [Entité A] et [Entité B] ?'},{l:'Actionnaires d\'une entreprise',f:'Qui sont les actionnaires de [Entreprise] ?'}]]];
+const TOUTES=BANQUE.flatMap(([c,qs])=>qs.filter(q=>typeof q==='string').map(q=>[c,q]));
+async function demander(q,out,btn){
+  out.innerHTML=spin('Analyse du graphe…');if(btn)btn.disabled=true;
+  try{const {d,ms}=await post('/ask',{question:q,limite:40});out.innerHTML=`<div class="small text-body-secondary mb-1">Latence : ${(ms/1000).toFixed(1)} s</div>`+answer(d)}catch(e){out.innerHTML=fail(e)}
+  if(btn)btn.disabled=false;
+}
+function pageAssistant(){
+  $('#pg').innerHTML=head('Assistant GraphRAG','Les tableaux sont calculés sur tout le graphe ; le modèle ne rédige que la synthèse. A_VERIFIER n\'est pas un fait confirmé.')+
+  `<ul class="nav nav-tabs mb-3"><li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#t1">Poser une question</button></li><li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t2">Banc de test (${TOUTES.length} questions)</button></li></ul>
+  <div class="tab-content"><div class="tab-pane fade show active" id="t1">
+   <div class="input-group mb-2"><textarea id="q" class="form-control" rows="2" placeholder="Posez une question sur le réseau politique et économique…"></textarea><button class="btn btn-primary" id="go">Interroger</button></div>
+   <div class="alert alert-info small py-2">Chaque question est traitée seule : l'API ne garde pas de conversation. Nommez le groupe ou la catégorie au lieu d'écrire « leurs actionnaires ».</div>
+   <div class="accordion mb-3" id="bq">${BANQUE.map(([c,qs],i)=>`<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button ${i?'collapsed':''}" data-bs-toggle="collapse" data-bs-target="#b${i}">${esc(c)}</button></h2><div id="b${i}" class="accordion-collapse collapse ${i?'':'show'}" data-bs-parent="#bq"><div class="accordion-body d-grid gap-2">${qs.map((q,j)=>typeof q==='string'?`<button class="btn btn-outline-secondary btn-sm q-btn" data-q="${esc(q)}">${esc(q)}</button>`:`<button class="btn btn-outline-primary btn-sm q-btn" data-f="${esc(q.f)}">✎ ${esc(q.l)}</button>`).join('')}</div></div></div>`).join('')}</div>
+   <div id="out"></div></div>
+  <div class="tab-pane fade" id="t2"><p class="text-body-secondary">Lance chaque question de la banque et mesure l'intention détectée, le nombre de résultats et la latence. « 0 résultat » ou « hors_perimetre » signale une question que l'API ne sait pas traiter telle quelle.</p>
+   <div class="d-flex gap-2 mb-3"><button class="btn btn-primary" id="bl">Lancer le banc</button><button class="btn btn-outline-secondary" id="bx">Exporter CSV</button><div class="progress flex-grow-1 align-self-center" style="height:8px"><div id="bp" class="progress-bar" style="width:0"></div></div></div>
+   <div class="table-responsive"><table class="table table-sm align-middle small"><thead><tr><th>Catégorie</th><th>Question</th><th>Intention</th><th>Résultats</th><th>Latence</th><th>LLM</th><th></th></tr></thead><tbody id="bt"></tbody></table></div></div></div>`;
+  const go=()=>{const q=$('#q').value.trim();if(q)demander(q,$('#out'),$('#go'))};
+  $('#go').onclick=go;
+  document.querySelectorAll('.q-btn').forEach(b=>b.onclick=()=>{if(b.dataset.q){$('#q').value=b.dataset.q;go()}else{$('#q').value=b.dataset.f;$('#q').focus()}});
+  $('#bl').onclick=async()=>{$('#bl').disabled=true;BANC=[];$('#bt').innerHTML='';let i=0;
+    for(const [c,q] of TOUTES){const tr=document.createElement('tr');$('#bt').appendChild(tr);let rec={c,q};
+      try{const {d,ms}=await post('/ask',{question:q,limite:20});rec={c,q,i:d.type_de_recherche,t:d.resultat?.total??0,ms,e:(d.erreurs_llm||[]).join(' ; '),d}}catch(e){rec={c,q,err:e.message}}
+      BANC.push(rec);const bad=rec.err||rec.i==='hors_perimetre'||rec.t===0;
+      tr.innerHTML=`<td>${esc(c)}</td><td>${esc(q)}</td><td>${rec.err?badge('erreur','danger'):badge(rec.i,bad?'danger':'secondary')}</td><td>${bad?badge(rec.err?'—':rec.t,'danger'):rec.t}</td><td>${rec.ms?(rec.ms/1000).toFixed(1)+' s':'—'}</td><td>${rec.e?badge('dégradé','warning'):'—'}</td><td>${rec.d?`<button class="btn btn-sm btn-outline-primary" data-k="${BANC.length-1}">Voir</button>`:esc(rec.err||'')}</td>`;
+      const bt=tr.querySelector('[data-k]');if(bt)bt.onclick=()=>{const r=BANC[+bt.dataset.k];$('#vt').textContent=r.q;$('#vb').innerHTML=answer(r.d);bootstrap.Modal.getOrCreateInstance($('#vm')).show()};
+      $('#bp').style.width=(100*(++i)/TOUTES.length)+'%'}
+    $('#bl').disabled=false};
+  $('#bx').onclick=()=>{const l=[['categorie','question','intention','resultats','latence_ms','erreurs_llm','erreur'],...BANC.map(r=>[r.c,r.q,r.i,r.t,r.ms,r.e,r.err])].map(x=>x.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(','));const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([l.join('\n')],{type:'text/csv'}));a.download='banc_questions.csv';a.click()};
+}
+
+/* ---------- Tableau de bord ---------- */
+function pageDash(){
+  $('#pg').innerHTML=head('Tableau de bord','Vue d\'ensemble du graphe chargé en mémoire par l\'API.')+'<div id="o"></div>';
+  load('#o','/stats',d=>{const n=d.nombre_relations||1;return kpi([[d.nombre_entites,'entités'],[d.nombre_relations,'relations'],[Math.round(100*d.relations_avec_extrait/n)+' %','avec extrait textuel'],[d.relations_par_nature?.economique||0,'liens économiques'],[d.relations_par_nature?.politique||0,'liens politiques']])+
+   `<div class="row g-3"><div class="col-md-6 col-xl-3">${bars('Entités par catégorie',d.entites_par_categorie)}</div><div class="col-md-6 col-xl-3">${bars('Relations par nature',d.relations_par_nature)}</div><div class="col-md-6 col-xl-3">${bars('Relations par type',d.relations_par_type)}</div><div class="col-md-6 col-xl-3">${bars('Ignorées au chargement',d.relations_ignorees_au_chargement)}</div></div><p class="small text-body-secondary mt-3">Chargé le ${esc(d.charge_le)} · modèle prioritaire ${esc(d.modele_prioritaire)}</p>`});
+}
+
+/* ---------- Explorateur ---------- */
+let net,N,E;
+function pageGraphe(){
+  $('#pg').innerHTML=head('Explorateur du graphe','Cherchez une entité. Double-clic sur un nœud : déplier. Clic sur un lien : statut, dates, preuves.')+
+  `<div class="input-group mb-2"><input id="gs" class="form-control" placeholder="Nom (ex. Akhannouch, Maroc Telecom)"><select id="gn" class="form-select" style="max-width:180px"><option value="">Toutes natures</option><option>politique</option><option>economique</option><option>familial</option></select><button class="btn btn-primary" id="gb">Chercher</button></div><div id="gr" class="d-flex gap-2 flex-wrap mb-2"></div>
+  <div class="small mb-2"><span class="badge text-bg-primary">politique</span> <span class="badge text-bg-warning">économique</span> <span class="badge text-bg-secondary">familial / autre</span> · tirets = à vérifier</div>
+  <div class="row g-3"><div class="col-lg-8"><div id="gv" class="card"></div></div><div class="col-lg-4"><div class="card" id="sd"><div class="card-body text-body-secondary">Sélectionnez un lien ou un nœud.</div></div></div></div>`;
+  N=new vis.DataSet();E=new vis.DataSet();const ink=getComputedStyle(document.body).color;
+  net=new vis.Network($('#gv'),{nodes:N,edges:E},{nodes:{shape:'dot',size:13,font:{size:13,color:ink}},edges:{arrows:'to',font:{size:10,color:ink,strokeWidth:0},width:1.8,smooth:{type:'dynamic'}},physics:{solver:'forceAtlas2Based',stabilization:{iterations:200}}});
+  net.on('click',p=>{if(p.edges.length&&!p.nodes.length)arete(p.edges[0]);else if(p.nodes.length){const n=N.get(p.nodes[0]);$('#sd').innerHTML=`<div class="card-body"><b>${esc(n.label)}</b><p class="small text-body-secondary">${esc(n.title||'')}</p></div>`}});
+  net.on('doubleClick',p=>{if(p.nodes.length)voisins(p.nodes[0])});
+  const ch=async()=>{const q=$('#gs').value.trim();if(!q)return;try{const {d}=await call('/entites?recherche='+encodeURIComponent(q)+'&limite=8');$('#gr').innerHTML=d.resultats.map(r=>`<button class="btn btn-sm btn-outline-secondary" data-i="${esc(r.id)}">${esc(r.label)} <span class="badge text-bg-light">${r.nombre_relations}</span></button>`).join('')||'<em>Aucun résultat.</em>';document.querySelectorAll('#gr [data-i]').forEach(b=>b.onclick=()=>{N.clear();E.clear();voisins(b.dataset.i)})}catch(e){$('#gr').innerHTML=fail(e)}};
+  $('#gb').onclick=ch;$('#gs').onkeydown=e=>{if(e.key==='Enter')ch()};
+}
+async function voisins(id){
+  const C={politique:'#2f5da8',economique:'#c4800a',familial:'#8a4fa0'},aut='#7b8581',CAT={PERSONNE:'#0f8a82',PARTI:'#2f5da8',ENTREPRISE:'#c4800a'};
+  try{const nat=$('#gn').value,{d}=await call(`/graphe/voisinage?id=${encodeURIComponent(id)}&profondeur=1${nat?'&nature='+nat:''}`);
+    N.update(d.noeuds.map(n=>({id:n.id,label:n.label,title:`${n.type} – ${n.description||''}`,color:CAT[n.categorie]||aut,size:n.id===id?20:13})));
+    d.aretes.forEach(a=>{if(!E.get('e'+a.idx))E.add({id:'e'+a.idx,from:a.source,to:a.cible,label:a.relation,color:C[a.nature]||aut,dashes:a.statut!=='CONFIRME',idx:a.idx})});
+    if(d.tronque)$('#sd').innerHTML='<div class="card-body"><div class="alert alert-warning mb-0">Voisinage tronqué.</div></div>';
+  }catch(e){$('#sd').innerHTML=`<div class="card-body">${fail(e)}</div>`}
+}
+async function arete(eid){
+  try{const {d:r}=await call('/graphe/relation/'+E.get(eid).idx),L=(a,f)=>a&&a.length?a.map(f).join(''):'<dd>—</dd>';
+    $('#sd').innerHTML=`<div class="card-body small"><b>${esc(r.source)}</b> → <b>${esc(r.cible)}</b><div class="my-2">${bStat(r.statut)} ${badge(r.nature,NAT[r.nature]||'secondary')}${r.statut_renseigne?'':' <span class="text-body-secondary">(statut non renseigné)</span>'}</div><dl class="mb-0"><dt>Relation</dt><dd>${esc(r.relation)}</dd><dt>Confiance (estimation, pas une preuve)</dt><dd>${fmt(r.confiance)}</dd><dt>Période</dt><dd>${esc(r.debut||'?')} → ${esc(r.fin||'?')}</dd><dt>Documentation</dt><dd>${esc(r.qualite_preuve?.niveau_documentation)}</dd><dt>Extraits</dt>${L(r.preuves,p=>`<dd class="border-start ps-2 mb-1">« ${esc(p)} »</dd>`)}<dt>Sources</dt>${L(r.sources,u=>`<dd><a href="${safe(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\//,'').slice(0,40))}</a></dd>`)}</dl>${(r.qualite_preuve?.alertes||[]).map(a=>`<div class="alert alert-warning py-1 mt-2 mb-0">${esc(a)}</div>`).join('')}</div>`}catch(e){$('#sd').innerHTML=`<div class="card-body">${fail(e)}</div>`}
+}
+
+/* ---------- Évaluation ---------- */
+function pageEval(){
+  $('#pg').innerHTML=head('Évaluation : GraphRAG contre Cypher','Cypher est une référence de comparaison, pas une vérité terrain. Les colonnes « seulement… » montrent ce que le filtrage ajoute ou retire.')+
+  `<div class="d-flex gap-3 align-items-center mb-3"><div class="form-check"><input class="form-check-input" type="checkbox" id="el"><label class="form-check-label" for="el">Inclure la synthèse LLM (plus lent)</label></div><button class="btn btn-primary" id="er">Lancer</button></div><div id="eo"></div><h5 class="mt-4">Historique</h5><div id="eh"></div>`;
+  const hist=()=>load('#eh','/evaluation/historique',d=>tbl(d.runs.map(r=>({date:r.ts,llm:r.avec_llm,...r.synthese}))));hist();
+  $('#er').onclick=async()=>{$('#er').disabled=true;$('#eo').innerHTML=spin('Évaluation en cours…');
+    try{const {d}=await post('/evaluation/run',{avec_llm:$('#el').checked}),s=d.synthese;
+      $('#eo').innerHTML=kpi([[s.cas,'cas'],[s.f1_moyen_graphrag_vs_cypher,'F1 moyen vs Cypher'],[s.latence_graphrag_ms+' ms','GraphRAG'],[s.latence_cypher_ms+' ms','Cypher'],[s.latence_graphrag_llm_ms?s.latence_graphrag_llm_ms+' ms':'—','avec LLM']])+
+      tbl(d.resultats.map(r=>({cas:r.id,intention:r.intention,F1:r.graphrag_vs_cypher?.f1,précision:r.graphrag_vs_cypher?.precision,rappel:r.graphrag_vs_cypher?.rappel,graphrag_ms:r.graphrag_ms,cypher_ms:r.cypher_ms,n_graphrag:r.tailles?.graphrag,n_cypher:r.tailles?.cypher,seulement_graphrag:r.seulement_graphrag,seulement_cypher:r.seulement_cypher,erreur:r.graphrag_erreur||r.cypher_erreur})));hist()}catch(e){$('#eo').innerHTML=fail(e)}$('#er').disabled=false}
+}
+
+/* ---------- Sources / Qualité / Supervision / Admin / Architecture ---------- */
+function pageSources(){
+  $('#pg').innerHTML=head('Sources et preuves','Un extrait n\'est pas une validation. Une URL Wikidata seule est une source structurée à examiner.')+
+  `<div class="input-group mb-3"><select id="sn" class="form-select"><option value="">Tous niveaux</option><option>documente_a_examiner</option><option>extrait_sans_url</option><option>source_structuree_a_examiner</option><option>url_sans_extrait</option><option>insuffisant</option></select><select id="ss" class="form-select"><option value="">Tous statuts</option><option>CONFIRME</option><option>A_VERIFIER</option></select><button class="btn btn-primary" id="sb">Filtrer</button></div><div id="so"></div>`;
+  const run=()=>load('#so',`/sources?limite=100${$('#sn').value?'&niveau='+$('#sn').value:''}${$('#ss').value?'&statut='+$('#ss').value:''}`,d=>
+   `<div class="row g-3 mb-3"><div class="col-md-5">${bars('Niveaux de documentation',d.niveaux)}</div><div class="col-md-7">${card('Domaines',tbl(d.domaines.slice(0,12)))}</div></div>`+card(`Relations (${d.total_filtre})`,tbl(d.relations.map(r=>({source:r.source,relation:r.relation,cible:r.cible,statut:r.statut,confiance:r.confiance,debut:r.debut,fin:r.fin,preuves:(r.preuves||[]).map(p=>p.slice(0,90)),sources:(r.sources||[]).length})))));
+  $('#sb').onclick=run;run();
+}
+function pageQualite(){
+  $('#pg').innerHTML=head('Qualité des données','Indicateurs de couverture. Ils ne valident aucune relation.')+'<div id="qo"></div>';
+  load('#qo','/qualite',d=>{const r=d.relations;return kpi([[r.total,'relations'],[r.avec_extrait.pct+' %','avec extrait'],[r.wikidata_structure_seul.pct+' %','Wikidata seul'],[r.avec_date.pct+' %','datées'],[r.confirmees,'CONFIRME'],[d.entites.sans_relation,'entités isolées']])+
+   card('À traiter',tbl(d.a_traiter))+`<div class="row g-3 mb-3"><div class="col-md-4">${bars('Nature des relations',r.par_nature)}</div><div class="col-md-4">${bars('Périmètre des personnes',d.personnes.perimetre)}</div><div class="col-md-4">${bars('Entités par catégorie',d.entites.par_categorie)}</div></div>`+
+   accordion([['Entités fusionnées au chargement ('+(d.fusions||[]).length+')',tbl(d.fusions)],['Homonymes non fusionnés ('+(d.fusions_ambigues||[]).length+')',tbl(d.fusions_ambigues)],['Doublons potentiels restants',tbl(d.doublons_potentiels)],['Relations non qualifiées (échantillon)',tbl(d.echantillon_non_qualifiees)]])});
+}
+function pageSup(){
+  $('#pg').innerHTML=head('Supervision','Métriques en mémoire, rafraîchies toutes les 10 s.')+'<div id="so"></div>';
+  const f=()=>call('/supervision').then(({d})=>{$('#so').innerHTML=kpi([[d.requetes.total,'requêtes'],[(d.requetes.taux_erreur_5xx*100).toFixed(1)+' %','erreurs 5xx'],[d.latence_ms.p50,'p50 ms'],[d.latence_ms.p95,'p95 ms'],[Math.round(d.uptime_secondes/60)+' min','disponibilité']])+
+   `<div class="row g-3 mb-3"><div class="col-md-4">${card('Neo4j',d.neo4j.ok?badge('connecté','success')+` ${d.neo4j.latence_ms} ms`:badge('erreur','danger')+' '+esc(d.neo4j.erreur))}</div><div class="col-md-4">${card('Groq',(d.groq.configure?badge('configuré','success'):badge('absent','secondary'))+' '+esc(d.groq.modele_prioritaire))}</div><div class="col-md-4">${card('Graphe',`${d.graphe.entites} entités, ${d.graphe.relations} relations<br><small class="text-body-secondary">${esc(d.graphe.charge_le)}</small>`)}</div></div>`+card('Routes',tbl(d.routes))+card('Dernières erreurs',tbl(d.dernieres_erreurs))}).catch(e=>$('#so').innerHTML=fail(e));
+  f();timer=setInterval(f,10000);
+}
+function pageAdmin(){
+  $('#pg').innerHTML=head('Administration','Accès, configuration et journal d\'audit (les questions posées y sont enregistrées).')+
+  '<div class="d-flex gap-2 mb-3"><button class="btn btn-outline-secondary" id="rl">Recharger le graphe depuis Neo4j</button><button class="btn btn-outline-secondary" id="pu">Purger l\'audit expiré</button></div><div id="am"></div><div id="au"></div><div id="ac"></div><div class="input-group mb-2"><input id="af" class="form-control" placeholder="Filtrer l\'audit par chemin (ex. /ask)"><button class="btn btn-primary" id="ab">Filtrer</button></div><div id="aa"></div>';
+  const aud=()=>load('#aa','/admin/audit?limite=100'+($('#af').value?'&chemin='+encodeURIComponent($('#af').value):''),d=>card('Journal d\'audit',tbl(d.evenements,['ts','utilisateur','role','methode','chemin','statut','ms','question'])));
+  load('#au','/admin/utilisateurs',d=>card('Utilisateurs et droits',tbl(d.utilisateurs)+tbl(Object.entries(d.droits).map(([r,x])=>({rôle:r,droits:x})))));
+  load('#ac','/admin/config',d=>card('Configuration',tbl(Object.entries(d).map(([k,v])=>({paramètre:k,valeur:v})))));aud();$('#ab').onclick=aud;
+  $('#rl').onclick=async()=>{try{const {d}=await post('/reload',{});$('#am').innerHTML=`<div class="alert alert-success">${esc(d.message)} ${d.nombre_entites} entités, ${d.nombre_relations} relations.</div>`}catch(e){$('#am').innerHTML=fail(e)}};
+  $('#pu').onclick=async()=>{try{const {d}=await post('/admin/audit/purge',{});$('#am').innerHTML=`<div class="alert alert-success">${d.supprimees} entrée(s) supprimée(s).</div>`;aud()}catch(e){$('#am').innerHTML=fail(e)}};
+}
+function pageArchi(){
+  $('#pg').innerHTML=head('Architecture','Un seul graphe, deux approches : analytique directe (Cypher) et GraphRAG.')+'<div id="ao"></div>';
+  load('#ao','/architecture',d=>`<div class="list-group mb-3">${d.etapes.map(e=>`<div class="list-group-item d-flex justify-content-between align-items-start"><div><b>${e.n}. ${esc(e.nom)}</b> – ${esc(e.role)}${e.etat?`<div class="small text-body-secondary">${esc(JSON.stringify(e.etat))}</div>`:''}</div>${e.supervise_ici?badge('supervisé','success'):badge('en amont','secondary')}</div>`).join('')}</div>${card('Garde-fous','<ul class="mb-0">'+d.garde_fous.map(g=>`<li>${esc(g)}</li>`).join('')+'</ul>')}<p class="small text-body-secondary">${esc(d.note)}</p>`);
+}
+
+/* ---------- navigation ---------- */
+const PAGES=[['Tableau de bord','lecteur',pageDash],['Assistant','lecteur',pageAssistant],['Explorateur','lecteur',pageGraphe],['Évaluation','analyste',pageEval],['Sources','lecteur',pageSources],['Qualité','lecteur',pageQualite],['Supervision','analyste',pageSup],['Administration','admin',pageAdmin],['Architecture','lecteur',pageArchi]];
+function aller(i){clearInterval(timer);document.querySelectorAll('#nv a').forEach((a,k)=>a.classList.toggle('active',k===i));try{PAGES[i][2]()}catch(e){$('#pg').innerHTML=fail(e)}}
+function menu(){
+  $('#nv').innerHTML=PAGES.map(p=>`<a class="nav-link" role="button">${p[0]}</a>`).join('');
+  document.querySelectorAll('#nv a').forEach((a,i)=>{if(RANG[ME.role]<RANG[PAGES[i][1]])a.classList.add('d-none');else a.onclick=()=>aller(i)});
+  $('#ap').value=API;$('#ap').onchange=e=>{API=e.target.value.replace(/\/$/,'');ls.set('api',API);boot()};
+  $('#me').innerHTML=ME.utilisateur?`${esc(ME.utilisateur)} (${esc(ME.role)}) · <a href="#" id="lo">quitter</a>`:`accès libre (${esc(ME.role)})`;
+  if($('#lo'))$('#lo').onclick=()=>{TOKEN='';ls.set('tk','');location.reload()};
+}
+async function boot(){
+  try{const {d}=await call('/auth/me');ME={role:d.role||'lecteur',utilisateur:d.utilisateur};menu();aller(0)}
+  catch(e){menu();$('#pg').innerHTML=e.message==='Connexion requise'?'':`<div class="alert alert-danger"><b>API injoignable.</b> Vérifiez l'URL, que l'API tourne et que <code>graph_api:app</code> (CORS) est bien lancé.<br><small>${esc(e.message)}</small></div>`}
+}
+boot();
+</script>
+</body>
+</html>
