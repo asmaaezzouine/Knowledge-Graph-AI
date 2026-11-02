@@ -1,0 +1,26 @@
+FROM apache/spark:3.5.0
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        curl && \
+    ln -s /usr/bin/python3 /usr/bin/python && \
+    pip3 install --no-cache-dir \
+        jupyterlab \
+        notebook \
+        pandas \
+        matplotlib && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+ENV PYSPARK_PYTHON=python3
+ENV PYSPARK_DRIVER_PYTHON=python3
+
+EXPOSE 8888 4040 7000 7001
+
+CMD ["bash", "-c", "jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password='' --NotebookApp.allow_origin='*'"]

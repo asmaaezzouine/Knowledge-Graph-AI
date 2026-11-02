@@ -1,0 +1,81 @@
+services:
+
+  neo4j:
+    image: neo4j:5.26-community
+
+    container_name: neo4j-gds
+
+    restart: unless-stopped
+
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+
+    environment:
+      # Neo4j authentication
+      NEO4J_AUTH: neo4j/password123
+
+      # Install GDS
+      NEO4J_PLUGINS: '["graph-data-science"]'
+
+      # Allow GDS procedures
+      NEO4J_dbms_security_procedures_unrestricted: "gds.*"
+      NEO4J_dbms_security_procedures_allowlist: "gds.*"
+
+      # Memory configuration
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+
+      # Bolt
+      NEO4J_server_bolt_enabled: "true"
+      NEO4J_server_bolt_listen__address: "0.0.0.0:7687"
+
+      # HTTP
+      NEO4J_server_http_enabled: "true"
+      NEO4J_server_http_listen__address: "0.0.0.0:7474"
+
+    volumes:
+      - ./neo4j/data:/data
+      - ./neo4j/logs:/logs
+      - ./neo4j/import:/import
+      - ./neo4j/plugins:/plugins
+      - ./neo4j/conf:/conf
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+
+  jupyter:
+      build:
+        context: .
+        dockerfile: Dockerfile
+
+      container_name: jupyter-neo4j
+
+      restart: unless-stopped
+
+      ports:
+        - "8888:8888"
+
+      environment:
+        JUPYTER_ENABLE_LAB: "yes"
+
+      volumes:
+        - ./notebooks:/home/jovyan/work
+
+      depends_on:
+        neo4j:
+          condition: service_healthy
+
+      command:
+        - start-notebook.py
+        - --NotebookApp.token=
+        - --NotebookApp.password=

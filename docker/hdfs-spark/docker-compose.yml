@@ -1,0 +1,224 @@
+version: "3.8"
+
+services:
+
+  # ======================
+  # HDFS - NAMENODE
+  # ======================
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    hostname: namenode
+    environment:
+      - CLUSTER_NAME=lab
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      - "9870:9870"
+    volumes:
+      - namenode:/hadoop/dfs/name
+
+  # ======================
+  # HDFS - DATANODE 1
+  # ======================
+  datanode1:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode1
+    hostname: datanode1
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - SERVICE_PRECONDITION=namenode:9000
+    depends_on:
+      - namenode
+    volumes:
+      - datanode1:/hadoop/dfs/data
+
+  # ======================
+  # HDFS - DATANODE 2
+  # ======================
+  datanode2:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode2
+    hostname: datanode2
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - SERVICE_PRECONDITION=namenode:9000
+    depends_on:
+      - namenode
+    volumes:
+      - datanode2:/hadoop/dfs/data
+
+  # ======================
+  # SPARK MASTER
+  # ======================
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: spark-master
+    hostname: spark-master
+    command: >
+      bash -c "
+      /opt/spark/sbin/start-master.sh &&
+      tail -f /opt/spark/logs/*"
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+
+  # ======================
+  # SPARK WORKER 1
+  # ======================
+  spark-worker1:
+    image: apache/spark:3.5.0
+    container_name: spark-worker1
+    hostname: spark-worker1
+    depends_on:
+      - spark-master
+    command: >
+      bash -c "
+      sleep 10 &&
+      /opt/spark/sbin/start-worker.sh spark://spark-master:7077 &&
+      tail -f /opt/spark/logs/*"
+
+  # ======================
+  # SPARK WORKER 2
+  # ======================
+  spark-worker2:
+    image: apache/spark:3.5.0
+    container_name: spark-worker2
+    hostname: spark-worker2
+    depends_on:
+      - spark-master
+    command: >
+      bash -c "
+      sleep 10 &&
+      /opt/spark/sbin/start-worker.sh spark://spark-master:7077 &&
+      tail -f /opt/spark/logs/*"
+
+  # ======================
+  # SPARK CLIENT
+  # ======================
+  spark-client:
+    image: apache/spark:3.5.0
+    container_name: spark-client
+    hostname: spark-client
+    stdin_open: true
+    tty: true
+    depends_on:
+      - spark-master
+      - namenode
+    command: tail -f /dev/null
+
+  # ==========================================
+  # JUPYTER (PySpark + Delta Lake)
+  # ==========================================
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    image: lab2-jupyter:latest
+    container_name: jupyter
+    hostname: jupyter
+    user: root
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+      - "7000-7010:7000-7010"
+    environment:
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+    volumes:
+      - ./notebooks:/workspace
+    depends_on:
+      - spark-master
+      - namenode
+
+  # ==========================================
+  # SPARK THRIFT SERVER (désactivé)
+  # ==========================================
+  # On conserve ce service dans le fichier pour
+  # pouvoir le réactiver si nécessaire.
+  # Il n'est pas démarré par les commandes ci-dessous.
+  #
+  # spark-thrift:
+  #   image: apache/spark:3.5.0
+  #   container_name: spark-thrift
+  #   hostname: spark-thrift
+  #   user: root
+  #   ports:
+  #     - "10000:10000"
+  #   depends_on:
+  #     - spark-master
+  #     - namenode
+  #   command:
+  #     - /bin/bash
+  #     - -c
+  #     - >-
+  #       exec /opt/spark/bin/spark-submit
+  #       --master spark://spark-master:7077
+  #       --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2
+  #       --packages io.delta:delta-spark_2.12:3.2.0
+  #       --conf spark.driver.extraClassPath=/root/.ivy2/jars/io.delta_delta-spark_2.12-3.2.0.jar:/root/.ivy2/jars/io.delta_delta-storage-3.2.0.jar
+  #       --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+  #       --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+  #       --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000
+  #       --conf spark.sql.warehouse.dir=/tmp/spark-warehouse
+  #       --conf hive.server2.thrift.port=10000
+  #       --conf hive.server2.thrift.bind.host=0.0.0.0
+
+  # ======================
+  # POSTGRESQL
+  # ======================
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: superset_user
+      POSTGRES_PASSWORD: "ChangeMoi_2026!"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superset_user -d analytics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # SUPERSET (BI / DASHBOARDS)
+  # ==========================================
+  superset:
+    image: apache/superset:3.1.0
+    container_name: superset
+    hostname: superset
+    user: root
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: "change_me_in_production_1234567890"
+      SUPERSET_LOAD_EXAMPLES: "no"
+    volumes:
+      - ./superset_home:/app/superset_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 800m
+    memswap_limit: 1200m
+    command: >
+      bash -c "
+      superset db upgrade &&
+      (superset fab create-admin
+        --username admin
+        --firstname Admin
+        --lastname User
+        --email admin@example.com
+        --password admin || true) &&
+      superset init &&
+      /usr/bin/run-server.sh"
+
+volumes:
+  namenode:
+  datanode1:
+  datanode2:
+  postgres_data:
